@@ -62,13 +62,14 @@ This dataset contains MRI brain images labeled into multiple tumor categories. I
 
 ---
 
-## **Installation**
+## Installation
+---
 
-### **1. Clone Repository**
+### 1. Clone Repository
 
 ```bash
-git clone <repo-url>
-cd <repo-directory>
+git clone https://github.com/VNIT-07/Brain-Tumor-Detection.git
+cd Brain-Tumor-Detection
 ```
 
 ### **2. Install Dependencies**

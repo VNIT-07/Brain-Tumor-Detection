@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE & OS Files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Ultralytics & Model cache
+.ultralytics/
+runs/
+*.log
+
+# Streamlit local state & secrets
+.streamlit/secrets.toml
+
+# Local logs (keep directory, ignore dynamic entries if needed)
+# logs/*.csv

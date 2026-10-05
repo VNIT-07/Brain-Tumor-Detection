@@ -1,313 +1,638 @@
+"""
+==============================================================================
+NeuroScan AI — Brain Tumor Detection & Localization (YOLOv8)
+==============================================================================
+A robust, medical-grade diagnostic assistance interface for automated brain
+tumor detection, classification, and localization using deep learning.
+
+Supported Classes:
+  - 0: Glioma
+  - 1: Meningioma
+  - 2: Pituitary
+  - 3: No Tumor
+==============================================================================
+"""
+
 import io
+import os
 import json
 import time
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
+from typing import List, Tuple, Dict, Any, Optional
 
 import streamlit as st
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
+
+# -----------------------------------------------------------------------------
+# CONFIGURATION & ENVIRONMENT SETUP
+# -----------------------------------------------------------------------------
+BASE_DIR = Path(__file__).parent.resolve()
+
+# Direct Ultralytics to store local config in workspace to prevent OS permission errors
+ULTRALYTICS_DIR = BASE_DIR / ".ultralytics"
+ULTRALYTICS_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("YOLO_CONFIG_DIR", str(ULTRALYTICS_DIR))
+
+# Lazy import YOLO after setting environment
 from ultralytics import YOLO
 
-# -------------------------------------------------------
-# CONFIGURATION & CONSTANTS
-# -------------------------------------------------------
 APP_TITLE = "NeuroScan AI"
-
-# Use a relative path for portability across machines/cloud
-BASE_DIR = Path(__file__).parent
+APP_SUBTITLE = "Automated Brain Tumor Detection & Localization System"
+MODEL_PATH = BASE_DIR / "best.pt"
+SAMPLES_DIR = BASE_DIR / "samples"
 LOG_DIR = BASE_DIR / "logs"
 LOG_FILE = LOG_DIR / "neuroscan_logs.csv"
-MODEL_PATH = BASE_DIR / "best.pt"
 
-# Standard colors for specific classes (consistent UI)
-CLASS_COLORS = {
-    0: (59, 130, 246),   # Glioma: Blue
-    1: (16, 185, 129),   # Meningioma: Green
-    2: (245, 158, 11),   # Pituitary: Orange
-    3: (107, 114, 128),  # No Tumor: Gray
+# Color mappings for classes (RGBA compatible RGB tuples & Hex)
+CLASS_METADATA = {
+    0: {"name": "Glioma", "color": (59, 130, 246), "hex": "#3B82F6", "badge": "primary"},
+    1: {"name": "Meningioma", "color": (16, 185, 129), "hex": "#10B981", "badge": "success"},
+    2: {"name": "Pituitary", "color": (245, 158, 11), "hex": "#F59E0B", "badge": "warning"},
+    3: {"name": "No Tumor", "color": (107, 114, 128), "hex": "#6B7280", "badge": "secondary"},
 }
-DEFAULT_COLOR = (255, 0, 255)  # Magenta for unknown
+DEFAULT_COLOR = (168, 85, 247)  # Purple for unknown classes
 
+# Available demo samples
+DEMO_SAMPLES = {
+    "Glioma Tumor (Abnormal)": SAMPLES_DIR / "glioma_sample.jpg",
+    "Meningioma Tumor (Abnormal)": SAMPLES_DIR / "meningioma_sample.jpg",
+    "Pituitary Tumor (Abnormal)": SAMPLES_DIR / "pituitary_sample.jpg",
+    "Healthy Brain (Normal Control)": SAMPLES_DIR / "healthy_sample.jpg",
+}
+
+# -----------------------------------------------------------------------------
+# STREAMLIT PAGE CONFIGURATION
+# -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title=APP_TITLE,
+    page_title=f"{APP_TITLE} — Brain Tumor Detection",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# -------------------------------------------------------
-# CSS STYLING
-# -------------------------------------------------------
+# -----------------------------------------------------------------------------
+# CUSTOM CSS STYLING
+# -----------------------------------------------------------------------------
 st.markdown("""
 <style>
-    .main-header { font-size: 2.5rem; font-weight: 800; color: #1E3A8A; margin-bottom: 0; }
-    .sub-header { font-size: 1.1rem; color: #6B7280; margin-bottom: 2rem; }
-    .warning-box { 
-        background-color: #2e1056; 
-        color: #FDE047; 
-        border-left: 6px solid #FACC15; 
-        padding: 1.2rem; 
-        border-radius: 8px; 
-        margin-bottom: 1.5rem; 
+    /* Metric Card Enhancements */
+    div[data-testid="stMetric"] {
+        background-color: rgba(30, 41, 59, 0.7);
+        border: 1px solid rgba(148, 163, 184, 0.15);
+        border-radius: 10px;
+        padding: 14px 18px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    div[data-testid="stMetricLabel"] {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #94A3B8;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #F8FAFC;
+    }
+    
+    /* Disclaimer Banner */
+    .disclaimer-banner {
+        background: linear-gradient(90deg, #1e1b4b 0%, #311042 100%);
+        border-left: 5px solid #EAB308;
+        border-radius: 8px;
+        padding: 14px 18px;
+        margin-bottom: 20px;
+        color: #FEF08A;
+        font-size: 0.92rem;
+        line-height: 1.5;
+    }
+    .disclaimer-title {
+        font-weight: 700;
+        color: #FACC15;
+        margin-bottom: 4px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    /* Class Legend Badges */
+    .legend-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 12px 0 20px 0;
+    }
+    .legend-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 12px;
+        border-radius: 9999px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        background-color: rgba(15, 23, 42, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: #E2E8F0;
+    }
+    .legend-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+    }
+
+    /* Findings Cards */
+    .finding-alert-positive {
+        background-color: rgba(239, 68, 68, 0.12);
+        border-left: 4px solid #EF4444;
+        padding: 12px 16px;
+        border-radius: 6px;
+        margin-bottom: 12px;
+        color: #FCA5A5;
         font-weight: 500;
     }
-    .stat-box { background-color: #F3F4F6; padding: 1rem; border-radius: 8px; text-align: center; box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05); }
-    .stat-value { font-size: 1.5rem; font-weight: 700; color: #1F2937; }
-    .stat-label { font-size: 0.875rem; color: #6B7280; text-transform: uppercase; letter-spacing: 0.05em; }
+    .finding-alert-negative {
+        background-color: rgba(16, 185, 129, 0.12);
+        border-left: 4px solid #10B981;
+        padding: 12px 16px;
+        border-radius: 6px;
+        margin-bottom: 12px;
+        color: #6EE7B7;
+        font-weight: 500;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# -------------------------------------------------------
-# UTILITY FUNCTIONS
-# -------------------------------------------------------
-def init_logging():
-    """Ensure log directory exists."""
+
+# -----------------------------------------------------------------------------
+# LOGGING & MODEL MANAGEMENT
+# -----------------------------------------------------------------------------
+def init_logging() -> None:
+    """Ensure logs directory exists."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-def log_run(data: dict):
-    """Append a run dictionary to the CSV log."""
+
+def log_run(data: dict) -> bool:
+    """Append inference record to persistent CSV log."""
     try:
+        init_logging()
         df = pd.DataFrame([data])
         header = not LOG_FILE.exists()
         df.to_csv(LOG_FILE, mode="a", header=header, index=False)
         return True
     except Exception as e:
-        st.error(f"Logging failed: {e}")
+        st.error(f"Failed to write log: {e}")
         return False
 
-def get_color(class_id):
-    """Return specific color for class or default."""
-    return CLASS_COLORS.get(class_id, DEFAULT_COLOR)
 
-@st.cache_resource
-def load_yolo_model(path: Path):
-    """Load YOLO model with error handling."""
-    if not path.exists():
+def load_logs() -> pd.DataFrame:
+    """Read CSV log into DataFrame."""
+    if LOG_FILE.exists():
+        try:
+            return pd.read_csv(LOG_FILE)
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+
+@st.cache_resource(show_spinner=False)
+def load_model(weights_path: Path) -> Optional[YOLO]:
+    """Load and cache YOLO model checkpoint."""
+    if not weights_path.exists():
         return None
     try:
-        return YOLO(str(path))
+        return YOLO(str(weights_path))
     except Exception as e:
-        st.error(f"Failed to load model: {e}")
+        st.error(f"Error initializing YOLO model: {e}")
         return None
 
-# -------------------------------------------------------
-# IMAGE PROCESSING
-# -------------------------------------------------------
-def draw_detections(pil_img, boxes, names_map, draw_boxes=True):
-    """
-    Draw overlays for detections.
-    Returns: PIL Image.
-    """
-    if not draw_boxes or not boxes:
-        return pil_img
 
-    base = pil_img.convert("RGBA")
+# -----------------------------------------------------------------------------
+# IMAGE ANNOTATION & RENDERING
+# -----------------------------------------------------------------------------
+def get_scalable_font(font_size: int) -> ImageFont.ImageFont:
+    """Find and return high-contrast TrueType font across OS platforms."""
+    candidate_paths = [
+        # macOS
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/Library/Fonts/Arial.ttf",
+        # Linux
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        # Windows
+        "C:\\Windows\\Fonts\\arialbd.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+    ]
+    for path in candidate_paths:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, font_size)
+            except Exception:
+                continue
+
+    # Fallback to Pillow's load_default with size if supported
+    try:
+        return ImageFont.load_default(size=font_size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def draw_detections(
+    image: Image.Image,
+    detections: List[Tuple[float, float, float, float, int, float]],
+    names_map: Dict[int, str],
+    show_boxes: bool = True,
+    fill_opacity: int = 50,
+) -> Image.Image:
+    """
+    Render high-visibility bounding boxes and labels onto the image.
+    """
+    if not show_boxes or not detections:
+        return image
+
+    base = image.convert("RGBA")
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    try:
-        font = ImageFont.truetype("arial.ttf", 16)
-    except:
-        font = ImageFont.load_default()
+    # Dynamic font sizing based on image dimensions
+    font_size = max(14, int(min(image.width, image.height) * 0.03))
+    font = get_scalable_font(font_size)
 
-    for (x1, y1, x2, y2, cls_id, conf) in boxes:
-        color_rgb = get_color(cls_id)
-        fill_color = color_rgb + (60,)    # transparent fill
-        stroke_color = color_rgb + (255,) # solid border
+    for x1, y1, x2, y2, cls_id, conf in detections:
+        meta = CLASS_METADATA.get(cls_id, {"color": DEFAULT_COLOR, "name": names_map.get(cls_id, f"Class {cls_id}")})
+        color_rgb = meta["color"]
+        class_name = meta["name"]
 
-        # Bounding box
+        fill_color = color_rgb + (fill_opacity,)
+        stroke_color = color_rgb + (255,)
+
+        # Draw bounding rectangle
         draw.rectangle([x1, y1, x2, y2], fill=fill_color, outline=stroke_color, width=3)
 
-        # Label
-        class_name = names_map.get(cls_id, f"Class {cls_id}")
-        label_text = f"{class_name} | {conf:.0%}"
-
+        # Label styling
+        label_text = f" {class_name} : {conf:.1%} "
         try:
             bbox = draw.textbbox((x1, y1), label_text, font=font)
             text_w = bbox[2] - bbox[0]
             text_h = bbox[3] - bbox[1]
-        except:
-            text_w, text_h = len(label_text) * 8, 14
+        except Exception:
+            text_w, text_h = len(label_text) * (font_size * 0.6), font_size + 4
 
-        if y1 - text_h - 6 > 0:
-            text_origin = (x1, y1 - text_h - 6)
+        # Position label above or inside box
+        pad = 4
+        if y1 - text_h - (pad * 2) > 0:
+            box_coords = [x1, y1 - text_h - (pad * 2), x1 + text_w, y1]
+            text_coords = (x1, y1 - text_h - pad)
         else:
-            text_origin = (x1, y1 + 6)
+            box_coords = [x1, y1, x1 + text_w, y1 + text_h + (pad * 2)]
+            text_coords = (x1, y1 + pad)
 
-        rect_origin = (
-            text_origin[0] - 4,
-            text_origin[1] - 2,
-            text_origin[0] + text_w + 4,
-            text_origin[1] + text_h + 4,
-        )
-
-        draw.rectangle(rect_origin, fill=stroke_color)
-        draw.text(text_origin, label_text, fill=(255, 255, 255, 255), font=font)
+        draw.rectangle(box_coords, fill=stroke_color)
+        draw.text(text_coords, label_text, fill=(255, 255, 255, 255), font=font)
 
     return Image.alpha_composite(base, overlay).convert("RGB")
 
-# -------------------------------------------------------
-# MAIN APP LAYOUT
-# -------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# INFERENCE PIPELINE
+# -----------------------------------------------------------------------------
+def run_inference(
+    model: YOLO,
+    image: Image.Image,
+    conf_threshold: float,
+    iou_threshold: float,
+) -> Tuple[List[Tuple[float, float, float, float, int, float]], Dict[str, int], float]:
+    """Execute model prediction and return bounding boxes, class counts, and latency."""
+    img_array = np.array(image)
+    start_time = time.time()
+    results = model.predict(
+        img_array,
+        conf=conf_threshold,
+        iou=iou_threshold,
+        verbose=False
+    )
+    inference_time = (time.time() - start_time) * 1000
+
+    detections = []
+    class_counts = defaultdict(int)
+
+    if results and results[0].boxes is not None:
+        boxes = results[0].boxes
+        for box in boxes:
+            coords = box.xyxy[0].tolist()
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+            class_name = CLASS_METADATA.get(cls_id, {}).get("name", model.names.get(cls_id, f"Class {cls_id}"))
+
+            detections.append((coords[0], coords[1], coords[2], coords[3], cls_id, conf))
+            class_counts[class_name] += 1
+
+    return detections, dict(class_counts), inference_time
+
+
+# -----------------------------------------------------------------------------
+# MAIN APPLICATION
+# -----------------------------------------------------------------------------
 def main():
     init_logging()
 
-    # Header
-    st.markdown(f"<div class='main-header'>{APP_TITLE}</div>", unsafe_allow_html=True)
-    st.markdown("<div class='sub-header'>Automated Brain Tumor Detection & Localization</div>", unsafe_allow_html=True)
+    # --- TOP HEADER ---
+    st.markdown(f"# 🧠 {APP_TITLE}")
+    st.caption(f"{APP_SUBTITLE} • Deep Learning Engine (YOLOv8)")
 
+    # Medical Disclaimer Banner
     st.markdown("""
-    <div class='warning-box'>
-        DISCLAIMER: RESEARCH USE ONLY.<br>
-        This tool uses Artificial Intelligence (YOLOv8). Do not use results for clinical diagnosis 
-        without review by a certified radiologist.
+    <div class="disclaimer-banner">
+        <div class="disclaimer-title">⚠️ RESEARCH USE ONLY — CLINICAL DISCLAIMER</div>
+        NeuroScan AI is an investigative computer-aided detection (CAD) tool developed for academic research. 
+        It is <strong>not</strong> an FDA/CE cleared diagnostic device. Output predictions must always be verified 
+        by a licensed radiologist or medical professional before making any clinical decisions.
     </div>
     """, unsafe_allow_html=True)
 
-    # Sidebar
-    with st.sidebar:
-        st.title("Configuration")
+    # Class Legend Pills
+    legend_html = '<div class="legend-container">'
+    for cid, meta in CLASS_METADATA.items():
+        legend_html += f'<span class="legend-pill"><span class="legend-dot" style="background-color: {meta["hex"]};"></span>{meta["name"]}</span>'
+    legend_html += '</div>'
+    st.markdown(legend_html, unsafe_allow_html=True)
 
-        st.subheader("Model Settings")
+    # --- SIDEBAR CONFIGURATION ---
+    with st.sidebar:
+        st.header("⚙️ Model Controls")
+
         conf_threshold = st.slider(
             "Confidence Threshold",
-            0.0, 1.0, 0.25, 0.05,
-            help="Minimum probability to count as a detection."
-        )
-        iou_threshold = st.slider(
-            "IOU Threshold",
-            0.0, 1.0, 0.45, 0.05,
-            help="Intersection Over Union for filtering overlaps."
+            min_value=0.05,
+            max_value=1.0,
+            value=0.25,
+            step=0.05,
+            help="Minimum probability score required to classify a region as a tumor."
         )
 
-        st.subheader("Visuals")
-        show_boxes = st.toggle("Show Bounding Boxes", True)
+        iou_threshold = st.slider(
+            "IoU Threshold (NMS)",
+            min_value=0.1,
+            max_value=0.9,
+            value=0.45,
+            step=0.05,
+            help="Intersection-over-Union threshold for Non-Maximum Suppression to filter overlapping boxes."
+        )
+
+        st.subheader("🎨 Visualization")
+        show_boxes = st.toggle("Overlay Bounding Boxes", value=True)
+        fill_opacity = st.slider("Fill Highlight Opacity", 10, 150, 60, 10, help="Transparency of bounding box highlight.")
 
         st.divider()
-        st.subheader("Metadata (Optional)")
-        case_id = st.text_input("Patient/Case ID", placeholder="e.g. P-1024")
-        scan_plane = st.selectbox("MRI Plane", ["Axial", "Sagittal", "Coronal", "Unknown"])
+        st.subheader("📋 Case Metadata (Optional)")
+        case_id = st.text_input("Patient / Case ID", placeholder="e.g. NS-2026-081")
+        scan_plane = st.selectbox("MRI Scan Plane", ["Axial", "Coronal", "Sagittal", "Unknown"])
+        notes = st.text_area("Clinical Notes", placeholder="e.g., T1 post-contrast axial slice...", height=70)
 
-    # Model Loading
-    model = load_yolo_model(MODEL_PATH)
+        st.divider()
+        st.caption(f"Weights: `{MODEL_PATH.name}`")
+        if MODEL_PATH.exists():
+            st.success("Checkpoint: Ready", icon="✅")
+        else:
+            st.error("Checkpoint: Missing", icon="❌")
+
+    # Load Model Checkpoint
+    model = load_model(MODEL_PATH)
     if model is None:
-        st.error(f"Model file not found at {MODEL_PATH}. Place 'best.pt' in the app directory.")
+        st.error(
+            f"❌ Model checkpoint not found at `{MODEL_PATH}`.\n\n"
+            "Please ensure `best.pt` is present in the application root directory."
+        )
         st.stop()
 
-    # File Upload
-    uploaded_file = st.file_uploader(
-        "Upload MRI Scan", 
-        type=["jpg", "jpeg", "png", "bmp", "tiff"]
-    )
+    # --- INPUT SELECTION TABS ---
+    input_tab1, input_tab2 = st.tabs(["📁 Upload Your MRI Scan", "🧪 Test Built-in Sample Scans"])
 
-    if uploaded_file:
-        image = Image.open(uploaded_file).convert("RGB")
-        img_array = np.array(image)
+    selected_image: Optional[Image.Image] = None
+    image_source_name: str = ""
 
-        # Inference
-        start_time = time.time()
-        results = model.predict(
-            img_array,
-            conf=conf_threshold,
-            iou=iou_threshold,
-            verbose=False
+    with input_tab1:
+        uploaded_file = st.file_uploader(
+            "Choose a brain MRI image file",
+            type=["jpg", "jpeg", "png", "bmp", "tiff"],
+            help="Upload an axial, coronal, or sagittal MRI slice."
         )
-        inference_time = (time.time() - start_time) * 1000
+        if uploaded_file is not None:
+            try:
+                selected_image = Image.open(uploaded_file).convert("RGB")
+                image_source_name = uploaded_file.name
+            except Exception as e:
+                st.error(f"Error opening image: {e}")
 
-        result = results[0]
+    with input_tab2:
+        st.write("Quickly test the detection model using curated, verified MRI scan samples:")
+        sample_choice = st.selectbox(
+            "Select Sample MRI Scan",
+            options=list(DEMO_SAMPLES.keys()),
+            index=0
+        )
+        sample_path = DEMO_SAMPLES[sample_choice]
+        if sample_path.exists():
+            if st.button("Load This Sample", type="secondary", use_container_width=True) or (uploaded_file is None and "sample_loaded" not in st.session_state):
+                st.session_state["sample_loaded"] = sample_choice
 
-        detections = []
-        class_counts = defaultdict(int)
+        if "sample_loaded" in st.session_state and uploaded_file is None:
+            chosen = DEMO_SAMPLES[st.session_state["sample_loaded"]]
+            if chosen.exists():
+                selected_image = Image.open(chosen).convert("RGB")
+                image_source_name = chosen.name
 
-        if result.boxes is not None and len(result.boxes) > 0:
-            for box in result.boxes:
-                coords = box.xyxy[0].tolist()
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                name = model.names[cls_id]
+    # --- INFERENCE & RESULTS PRESENTATION ---
+    if selected_image is not None:
+        st.divider()
 
-                detections.append(
-                    (coords[0], coords[1], coords[2], coords[3], cls_id, conf)
-                )
-                class_counts[name] += 1
+        # Run inference pipeline
+        detections, class_counts, inference_time = run_inference(
+            model,
+            selected_image,
+            conf_threshold,
+            iou_threshold
+        )
 
-        # --- DISPLAY RESULTS ---
-        col1, col2 = st.columns([3, 2])
+        # Annotated image generation
+        annotated_image = draw_detections(
+            selected_image,
+            detections,
+            model.names,
+            show_boxes=show_boxes,
+            fill_opacity=fill_opacity
+        )
 
-        with col1:
-            st.subheader("Visual Analysis")
+        col_img, col_metrics = st.columns([1.1, 0.9], gap="large")
 
-            if show_boxes and detections:
-                annotated_img = draw_detections(image, detections, model.names)
+        # --- LEFT COLUMN: VISUAL OUTPUT ---
+        with col_img:
+            view_mode = st.radio(
+                "Image View Mode",
+                ["Annotated Detection", "Original Scan", "Side-by-Side Comparison"],
+                horizontal=True
+            )
 
-                buf = io.BytesIO()
-                annotated_img.save(buf, format="PNG")
-                st.download_button(
-                    label="⬇ Download Annotated Image",
-                    data=buf.getvalue(),
-                    file_name="neuroscan_result.png",
-                    mime="image/png",
+            if view_mode == "Annotated Detection":
+                st.image(
+                    annotated_image,
+                    caption=f"{image_source_name} — {len(detections)} detection(s) at conf ≥ {conf_threshold:.0%}",
                     use_container_width=True
                 )
-
+            elif view_mode == "Original Scan":
                 st.image(
-                    annotated_img,
-                    use_column_width=True,
-                    caption=f"Processed Image ({len(detections)} detections)"
+                    selected_image,
+                    caption=f"{image_source_name} — Original Scan",
+                    use_container_width=True
                 )
             else:
-                st.image(
-                    image,
-                    use_column_width=True,
-                    caption="Original Image (No detections above threshold)"
-                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.caption("Original Scan")
+                    st.image(selected_image, use_container_width=True)
+                with c2:
+                    st.caption("Annotated Findings")
+                    st.image(annotated_image, use_container_width=True)
 
-        with col2:
-            st.subheader("Diagnostic Report")
+            # Download Annotated Image
+            buf = io.BytesIO()
+            annotated_image.save(buf, format="PNG")
+            st.download_button(
+                label="⬇️ Download Annotated Scan (PNG)",
+                data=buf.getvalue(),
+                file_name=f"neuroscan_{Path(image_source_name).stem}_annotated.png",
+                mime="image/png",
+                use_container_width=True
+            )
 
-            # Key Metrics
-            m1, m2, m3 = st.columns(3)
+        # --- RIGHT COLUMN: DIAGNOSTIC REPORT ---
+        with col_metrics:
+            st.subheader("📊 Diagnostic Summary")
+
+            # Primary Diagnosis Banner
+            abnormal_detections = [d for d in detections if d[4] in (0, 1, 2)]
+            if abnormal_detections:
+                tumor_types = list({CLASS_METADATA[d[4]]["name"] for d in abnormal_detections})
+                st.markdown(f"""
+                <div class="finding-alert-positive">
+                    🚨 <strong>Abnormal Findings Detected:</strong> {', '.join(tumor_types)} lesion(s) localized with active confidence.
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                <div class="finding-alert-negative">
+                    ✅ <strong>No Abnormal Tumor Lesions Detected</strong> above threshold.
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Quick Metric Counters
+            m1, m2, m3, m4 = st.columns(4)
             m1.metric("Detections", len(detections))
             m2.metric("Latency", f"{inference_time:.0f} ms")
-            highest_conf = max([d[5] for d in detections]) if detections else 0
-            m3.metric("Max Conf", f"{highest_conf:.1%}")
+            max_conf = max([d[5] for d in detections]) if detections else 0.0
+            m3.metric("Max Conf", f"{max_conf:.1%}")
+            m4.metric("Scan Size", f"{selected_image.width}×{selected_image.height}")
 
-            st.divider()
-
-            # Detailed Findings
+            # Findings Breakdown Table
+            st.markdown("#### 🔬 Identified Regions")
             if detections:
-                st.write("### Findings Breakdown")
-                for cls_name, count in class_counts.items():
-                    st.info(f"**{cls_name}:** {count} region(s) identified")
-
-                det_df = pd.DataFrame([
-                    {
-                        "Class": model.names[d[4]],
-                        "Confidence": f"{d[5]:.1%}"
-                    }
-                    for d in detections
-                ])
-                st.dataframe(det_df, use_container_width=True)
+                table_rows = []
+                for idx, (x1, y1, x2, y2, cid, conf) in enumerate(detections, start=1):
+                    cname = CLASS_METADATA.get(cid, {}).get("name", model.names.get(cid, f"Class {cid}"))
+                    area = int((x2 - x1) * (y2 - y1))
+                    table_rows.append({
+                        "#": idx,
+                        "Tumor Class": cname,
+                        "Confidence": f"{conf:.2%}",
+                        "Bounding Box [X1, Y1, X2, Y2]": f"[{int(x1)}, {int(y1)}, {int(x2)}, {int(y2)}]",
+                        "Area (px²)": f"{area:,}",
+                    })
+                st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
             else:
-                st.success("No tumor patterns detected above the selected threshold.")
+                st.info("No suspicious regions identified above the selected threshold.")
 
-            # Logging
-            st.divider()
-            if st.button("Save Record to Log"):
-                log_data = {
-                    "timestamp": datetime.now().isoformat(),
-                    "case_id": case_id,
+            # Logging & Export Actions
+            st.markdown("#### 💾 Audit & Export")
+            col_save, col_export = st.columns(2)
+
+            with col_save:
+                if st.button("📝 Save to Audit Log", use_container_width=True):
+                    record = {
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "case_id": case_id.strip() if case_id else "N/A",
+                        "scan_plane": scan_plane,
+                        "file_name": image_source_name,
+                        "detections_count": len(detections),
+                        "findings": json.dumps(class_counts),
+                        "max_confidence": f"{max_conf:.3f}",
+                        "latency_ms": f"{inference_time:.1f}",
+                        "notes": notes.strip() if notes else "N/A"
+                    }
+                    if log_run(record):
+                        st.success("Scan saved to audit log!", icon="✅")
+
+            with col_export:
+                report_data = {
+                    "application": APP_TITLE,
+                    "generated_at": datetime.now().isoformat(),
+                    "case_id": case_id or "UNSPECIFIED",
                     "scan_plane": scan_plane,
-                    "file_name": uploaded_file.name,
-                    "detections_count": len(detections),
-                    "findings": json.dumps(class_counts),
+                    "file_name": image_source_name,
+                    "metrics": {
+                        "detections_count": len(detections),
+                        "max_confidence": float(f"{max_conf:.4f}"),
+                        "inference_latency_ms": float(f"{inference_time:.2f}")
+                    },
+                    "detections": [
+                        {
+                            "id": i + 1,
+                            "class": CLASS_METADATA.get(d[4], {}).get("name", model.names.get(d[4])),
+                            "confidence": round(d[5], 4),
+                            "box": [round(coord, 1) for coord in d[:4]]
+                        }
+                        for i, d in enumerate(detections)
+                    ]
                 }
-                if log_run(log_data):
-                    st.toast("Run saved successfully!", icon="✅")
+                st.download_button(
+                    label="📄 Export Report (JSON)",
+                    data=json.dumps(report_data, indent=2),
+                    file_name=f"neuroscan_{Path(image_source_name).stem}_report.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+    else:
+        st.info("👆 Please upload an MRI scan image above or select a sample scan to view predictions.")
+
+    # --- LOG HISTORY & AUDIT TRAIL EXPANDER ---
+    st.divider()
+    with st.expander("📜 Audit Logs & Historical Records"):
+        logs_df = load_logs()
+        if not logs_df.empty:
+            st.dataframe(logs_df, use_container_width=True)
+            col_csv, col_clr = st.columns([0.8, 0.2])
+            with col_csv:
+                csv_buffer = logs_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="⬇️ Download Audit History (CSV)",
+                    data=csv_buffer,
+                    file_name="neuroscan_history.csv",
+                    mime="text/csv"
+                )
+            with col_clr:
+                if st.button("🗑️ Clear Log History"):
+                    if LOG_FILE.exists():
+                        LOG_FILE.unlink()
+                        st.rerun()
+        else:
+            st.caption("No audit logs recorded yet. Run inference and click 'Save to Audit Log'.")
+
 
 if __name__ == "__main__":
     main()
-
